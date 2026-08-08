@@ -1,0 +1,101 @@
+# =============================================================================
+# Evals-Driven Development (EDD) Gate
+#
+# Protects the Meta-Skill motor from silent behavioral regressions. Runs on
+# any PR that touches the motor (SKILL.md), the living registry, the scaffolds,
+# or the golden dataset.
+#
+# NOTE: The golden cases in evals/cases/ describe AGENT BEHAVIOR, which cannot
+# be executed deterministically by a CI runner alone. Therefore this workflow
+# (1) validates the structural integrity of the motor + golden dataset, and
+# (2) emits a mandatory behavioral-review checklist that blocks merge until a
+# human reviewer or evaluator harness replays the 5 golden cases.
+# =============================================================================
+
+name: Evals Gate
+
+on:
+  pull_request:
+    paths:
+      - 'SKILL.md'
+      - 'registry/**'
+      - 'templates/**'
+      - 'evals/**'
+
+jobs:
+  structural-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify SKILL.md has all 8 sections
+        run: |
+          EXPECTED_SECTIONS=9
+          ACTUAL_SECTIONS=$(grep -c '^## SECTION' SKILL.md)
+          if [ "$ACTUAL_SECTIONS" -ne "$EXPECTED_SECTIONS" ]; then
+            echo "❌ SKILL.md must have exactly $EXPECTED_SECTIONS sections, found $ACTUAL_SECTIONS"
+            exit 1
+          fi
+          echo "✅ SKILL.md has $ACTUAL_SECTIONS sections."
+
+      - name: Verify SKILL.md frontmatter has version and description
+        run: |
+          head -20 SKILL.md | grep -q '^version:' || { echo "❌ Missing version in frontmatter"; exit 1; }
+          head -20 SKILL.md | grep -q '^description:' || { echo "❌ Missing description in frontmatter"; exit 1; }
+          echo "✅ Frontmatter is valid."
+
+      - name: Verify golden dataset cases exist and are well-formed
+        run: |
+          CASE_COUNT=$(find evals/cases -name '*.md' -not -name 'README*' | wc -l)
+          if [ "$CASE_COUNT" -lt 5 ]; then
+            echo "❌ Expected at least 5 golden cases, found $CASE_COUNT"
+            exit 1
+          fi
+          for f in evals/cases/*.md; do
+            grep -q '## Input (User Prompt)' "$f" || { echo "❌ $f missing Input section"; exit 1; }
+            grep -q '## Expected Behavior' "$f" || { echo "❌ $f missing Expected Behavior"; exit 1; }
+            grep -q '## Acceptance Criteria' "$f" || { echo "❌ $f missing Acceptance Criteria"; exit 1; }
+          done
+          echo "✅ All $CASE_COUNT golden cases are well-formed."
+
+      - name: Verify registry files exist
+        run: |
+          for f in mcp-servers.md domain-skills.md design-references.md memory-lessons.md; do
+            [ -f "registry/$f" ] || { echo "❌ Missing registry/$f"; exit 1; }
+          done
+          echo "✅ All registry files present."
+
+      - name: Verify templates exist
+        run: |
+          for f in AGENTS.template.md SPEC.template.md eval-case.template.md; do
+            [ -f "templates/$f" ] || { echo "❌ Missing templates/$f"; exit 1; }
+          done
+          for f in frontend.md backend.md security.md; do
+            [ -f "templates/rules/$f" ] || { echo "❌ Missing templates/rules/$f"; exit 1; }
+          done
+          echo "✅ All template files present."
+
+  behavioral-review-checklist:
+    runs-on: ubuntu-latest
+    needs: structural-integrity
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Emit mandatory behavioral review checklist
+        run: |
+          echo "============================================="
+          echo "⚠️  BEHAVIORAL REVIEW REQUIRED BEFORE MERGE"
+          echo "============================================="
+          echo ""
+          echo "The following golden cases MUST be replayed against the updated"
+          echo "SKILL.md by a human reviewer or evaluator harness:"
+          echo ""
+          for f in evals/cases/*.md; do
+            CASE_ID=$(grep -m1 '^\*\*ID:' "$f" | sed 's/\*\*ID:\*\* //')
+            CASE_NAME=$(head -1 "$f" | sed 's/^# EVAL CASE: //')
+            echo "  - [ ] $CASE_ID: $CASE_NAME"
+          done
+          echo ""
+          echo "A case FAILS if the agent violates any Prohibited Action or"
+          echo "misses any Acceptance Criterion. Failed cases block merge."
+          echo "============================================="
